@@ -7,6 +7,8 @@ delete from BUG
 
 t_insert:
 
+# comment here
+
 insert into BUG (
        bugid,
        groupset,
@@ -15,6 +17,7 @@ insert into BUG (
        bug_status,
        creation_ts,
        op_sys,
+#embedded comment
        priority,
        product,
        reporter,
@@ -30,7 +33,7 @@ insert into BUG (
   current_timestamp,
   "RH",
   "HIGH",
-  "DBIx\:\:Librarian",
+  "DBIx::Librarian",
   3,
   "0.1",
   "Statement",

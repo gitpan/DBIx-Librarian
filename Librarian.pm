@@ -80,12 +80,23 @@ of entire SQL fragments.
 =item *
 
 Supports multiple repositories for queries - currently supports
-individual files, multiple-query files, and SQL::Catalog.
+individual files and multiple-query files.
 
 =item *
 
 Database connection can be passed into the Librarian initializer, or
 it will create it internally.
+
+=item *
+
+If the database connection is down when execute() is called, Librarian
+will attempt to re-connect.
+
+=item *
+
+Sets DBI LongReadLen and LongTruncOk to allow for fetching long values.
+Optional LONGREADLEN parameter to DBIx::Librarian::new will be passed
+through to DBI (default 1000).
 
 =back
 
@@ -218,14 +229,15 @@ they handle quoting and comments.
 
 =item *
 
-Support for Oracle PL/SQL and similar database language extensions.
+Additional SQL storage options, e.g. SQL::Catalog (store in a database -
+should be able to keep SQL in a different database from the app data),
+Class::Phrasebook::SQL (store in XML).
 
 =back
 
 =head1 WARNINGS
 
 You must call $dblbn->disconnect explicitly before your program terminates.
-
 
 This module uses strict throughout.  There is one notable side-effect;
 if you have a scalar value in a hash element:
@@ -276,6 +288,7 @@ my %select_mode = (
 		   ""	=> "zero_or_more",
 		  );
 
+# defaults
 my %parameters = (
 		  "ARCHIVER" => undef,
 		  "LIB"	=> undef,
@@ -287,6 +300,7 @@ my %parameters = (
 		  "DBI_USER" => undef,
 		  "DBI_PASS" => undef,
 		  "TRACE" => undef,
+		  "LONGREADLEN" => 1000,
 		 );
 
 =item B<new>
@@ -387,6 +401,11 @@ sub _init_archiver {
 sub _connect {
     my ($self) = shift;
 
+    printf STDERR ("CONNECT to %s as %s\n",
+		   $self->{DBI_DSN} || $ENV{DBI_DSN},
+		   $self->{DBI_USER} || $ENV{DBI_USER} || "(none)")
+      if $self->{TRACE};
+
     my $dbh = DBI->connect (
 			    $self->{DBI_DSN},
 			    $self->{DBI_USER},
@@ -400,6 +419,9 @@ sub _connect {
     if (!$dbh) {
 	croak $DBI::errstr;
     }
+
+    $dbh->{LongReadLen} = $self->{LONGREADLEN};
+    $dbh->{LongTruncOk} = 1;
 
     $self->{DBH} = $dbh;
 }
@@ -416,6 +438,29 @@ sub prepare {
 }
 
 
+=item B<can>
+
+  $dblbn->can("label");
+
+Returns true if a valid SQL block exists for tag "label".  Side effect is
+that the SQL is prepared for later execution.
+
+=cut
+
+sub can {
+    my ($self, $tag) = @_;
+
+    return 1 if $self->{SQL}->lookup($tag);
+
+    eval { $self->_prepare($tag) };
+    return 1 if $self->{SQL}->lookup($tag);
+
+    return;
+}
+
+
+
+
 =item B<execute>
 
   $dblbn->execute("label", $data);
@@ -425,13 +470,19 @@ be obtained from $data.  SELECT results will be written back to $data.
 
 The SQL block is obtained from the repository specified above.
 
-Return value is the number of non-SELECT SQL statements that were
-executed, if you find that useful.
+An array of two values is returned:
+  Total number of rows affected by all SQL statements (including SELECTs)
+  Reference to a list of the individual rowcounts for each statement
+
+May abort for various reasons, primarily Oracle errors.  Will abort
+if a SELECT is attempted without a $data target.
 
 =cut
 
 sub execute {
     my ($self, $tag, $data) = @_;
+
+    $self->_connect if ! $self->is_connected;
 
     my $prepped = $self->{SQL}->lookup($tag);
     if (!$prepped) {
@@ -440,7 +491,11 @@ sub execute {
 
     print STDERR "EXECUTE $tag\n" if $self->{TRACE};
 
-    return $self->_execute($prepped, $data);
+    my @rowcounts = $self->_execute($prepped, $data);
+    my $totalrows = 0;
+    map { $totalrows += $_ } @rowcounts;
+
+    return $totalrows, \@rowcounts;
 }
 
 
@@ -451,19 +506,53 @@ sub _prepare {
 
     print STDERR "PREPARE $tag\n" if $self->{TRACE};
 
-    my @stmts = grep { !/^\s*$/ } split (/\s*(\n\s*){2,}/, $sql);
+    my @stmts;
+
+    # for Oracle, support PL/SQL blocks marked by BEGIN...END;
+    # a PL/SQL statement block may contain nothing else
+    if (($self->{DBH}->{Driver}->{Name} =~ /Oracle/i)
+	&& ($sql =~ /^\s*BEGIN/))
+    {
+	print STDERR "\tOracle PL/SQL block\n" if $self->{TRACE};
+	# then treat the entire thing as a single statement.
+	push @stmts, $sql;
+    } else {
+
+	# a SQL statement is identified as a unit
+	#    separated from others by whitespace
+	#    containing at least one word at the beginning of a line
+	#
+	# Note that comments are NOT stripped, since the comment syntax
+	# varies between databases.  But a bunch of stuff that doesn't
+	# look like a SQL statement will be silently ignored, regardless
+	# of syntax.
+
+	@stmts =
+	  grep { /^\s*\w/ms }
+	    grep { !/^\s*$/ }
+	      split (/\s*(\n\s*){2,}/, $sql);
+    }
 
     my @preps;
 
     foreach my $stmt (@stmts) {
-	$stmt =~ s/;$//o;	# erase any trailing semicolons
 	if ($stmt =~ /^include\s+/io) {
 	    my ($include) = $stmt =~ /^include\s+(\S+)/;
 	    push @preps, $include;
 	    $self->_prepare($include);
 	} else {
+	    if ($self->{DBH}->{Driver}->{Name} =~ /Oracle/i) {
+		$stmt =~ s/--.*//mog;	# strip out Oracle comments
+		if ($stmt !~ /^\s*BEGIN/) {
+		    $stmt =~ s/\s*;$//mso; # erase trailing semicolon
+		}
+	    } else {
+		$stmt =~ s/\s*;$//mso;	# erase trailing semicolon
+	    }
+
 	    my $statement = new DBIx::Librarian::Statement ($self->{DBH},
-							    $stmt);
+							    $stmt,
+							    TRACE => $self->{TRACE});
 	    $statement->{ALLARRAYS} = $self->{ALLARRAYS};
 	    push @preps, $statement;
 	}
@@ -478,14 +567,14 @@ sub _prepare {
 sub _execute {
     my ($self, $prep, $data) = @_;
 
-    my $update_count = 0;
+    my @rowcounts;
 
     foreach my $stmt_prep (@{$prep}) {
 	if (!ref($stmt_prep)) {
 	    # found an include
-	    $update_count += $self->execute($stmt_prep, $data);
+	    push @rowcounts, $self->execute($stmt_prep, $data);
 	} else {
-	    eval { $update_count += $stmt_prep->execute($data); };
+	    eval { push @rowcounts, $stmt_prep->execute($data); };
 	    if ($@) {
 		$self->rollback;
 		die $@;
@@ -493,12 +582,13 @@ sub _execute {
 	}
     }
 
-    if ($update_count && $self->{AUTOCOMMIT}) {
-	# there was at least one non-SELECT, so better commit here
+#    if ($update_count && $self->{AUTOCOMMIT}) {
+    if ($self->{AUTOCOMMIT}) {
+#	# there was at least one non-SELECT, so better commit here
 	$self->commit;
     }
 
-    return $update_count;
+    return @rowcounts;
 }
 
 
@@ -566,9 +656,34 @@ are discarded.
 sub disconnect {
     my ($self) = @_;
 
+    printf STDERR ("DISCONNECT %s\n",
+		   $self->{DBI_DSN} || $ENV{DBI_DSN})
+      if $self->{TRACE};
+
     $self->{DBH}->disconnect if $self->{DBH};
     undef $self->{DBH};
-    undef $self->{SQL};
+#    undef $self->{SQL};
+}
+
+=item B<is_connected>
+
+  $dblbn->is_connected;
+
+Returns boolean indicator whether the database connection is active.  This
+depends on the $dbh->{Active} flag set by DBI, which is driver-specific.
+
+=cut
+
+sub is_connected {
+    my ($self) = @_;
+
+    return 1 if $self->{DBH} && $self->{DBH}->{Active};
+}
+
+sub DESTROY {
+    my ($self) = @_;
+
+    disconnect $self if $self->is_connected;
 }
 
 1;
@@ -594,6 +709,8 @@ Under development.
   SQL::Catalog
   DBIx::SearchProfiles
   DBIx::Abstract
+  DBIx::Recordset
+  Tie::DBI
 
   Relevant links stolen from SQL::Catalog documentation:
     http://perlmonks.org/index.pl?node_id=96268&lastnode_id=96273

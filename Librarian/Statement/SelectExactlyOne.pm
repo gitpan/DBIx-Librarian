@@ -39,6 +39,8 @@ sub fetch {
     if ($self->{STH}->fetchrow_hashref) {
 	croak "Expected exactly one row; received more than one for\n" . $self->{STH}->{Statement};
     }
+
+    return 1;
 }
 
 

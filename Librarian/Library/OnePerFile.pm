@@ -106,6 +106,7 @@ sub _cache_valid {
     my ($self, $tag) = @_;
 
     return unless defined $self->{$tag};
+    return unless defined $self->{$tag}->{STMTS};
 
     return unless ($self->{$tag}->{LOADTS}
 		   >= (stat($self->{$tag}->{FILE}))[9]);
@@ -147,12 +148,13 @@ sub find {
     print STDERR "FOUND $tag in $file\n" if $self->{TRACE};
 
     $self->{$tag}->{FILE} = $file;
+    $self->{$tag}->{LOADTS} = (stat($self->{$tag}->{FILE}))[9];
 
     return $sql;
 }
 
 
-=item B<new>
+=item B<cache>
 
   $archiver->cache($tag, $data);
 
@@ -166,8 +168,34 @@ sub cache {
     print STDERR "CACHE $tag\n" if $self->{TRACE};
 
     $self->{$tag}->{STMTS} = $data;
-    $self->{$tag}->{LOADTS} = time;
 }
+
+
+=item B<toc>
+
+  my @array = $archiver->toc();
+
+Search through the library and return a list of all available entries.
+Does not import any of the items.
+
+=cut
+
+sub toc {
+    my ($self) = @_;
+
+    my %items;
+    foreach my $lib (@{$self->{LIB}}) {
+	opendir DIR, $lib or die "open $lib failed: $!";
+	foreach my $file (readdir DIR) {
+	    next unless $file =~ /\.$self->{EXTENSION}$/;
+	    $items{$file}++;
+	}
+	closedir DIR;
+    }
+
+    return sort keys %items;
+}
+
 
 1;
 

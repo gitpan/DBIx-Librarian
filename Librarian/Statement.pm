@@ -10,7 +10,8 @@ DBIx::Librarian::Statement - an active SQL statement in a Librarian
 
 =head1 SYNOPSIS
 
-Internal class used by DBIx::Librarian.
+Internal class used by DBIx::Librarian.  Implementation of BUILDER
+pattern (Librarian is the Director, Statement is the Builder).
 
 Recognizes the following extensions to the SQL SELECT directive:
 
@@ -45,18 +46,29 @@ in $dbh.  Handles bind variables and direct substitution.
 =cut
 
 sub new {
-    my ($proto, $dbh, $sql) = @_;
+    my ($proto, $dbh, $sql, %config) = @_;
 
     my $class = ref ($proto) || $proto;
-    my $self = {};
+    my $self = {
+		DBH => $dbh
+	       };
+    while (my ($key, $val) = each %config) {
+	$self->{$key} = $val;
+    }
 
 
-    $self->{DBH} = $dbh;
+    # WARNING: Oracle does not like ? placeholders inside comments.
+    #   If Statement thinks that the ? in the comment is a bind value
+    #   and includes a value for it in the execute() list, Oracle receives
+    #   more values than it expects.
+    #   mysql seems to handle this correctly.
+    #   May need to strip comments from SQL before converting placeholders.
+    #   Yuck.  Is there a cross-platform way to do this?
 
 
-    my @bindvars = $sql =~ /[^\\]:(\w+)/og;
+    my @bindvars = $sql =~ /[^A-Za-z0-9:]:(\w+)/mog;
     if (@bindvars) {
-	$sql =~ s/([^\\]):\w+/$1?/og;
+	$sql =~ s/([^A-Za-z0-9:]):\w+/$1?/og;
     }
     $self->{BINDVARS} = \@bindvars;
 
@@ -101,6 +113,9 @@ sub new {
 sub _prepare {
     my ($self, $sql) = @_;
 
+    print STDERR "PREPARE SQL:\n", $sql, "\n====================\n"
+      if $self->{TRACE};
+
     my $sth = $self->{DBH}->prepare($sql);
     if (!$sth) {
 	croak $self->{DBH}->errstr;
@@ -126,13 +141,17 @@ sub execute {
 
     my @bindlist = $self->_bind($data);
 
+    if ($self->{IS_SELECT} && !$data) {
+	croak "Missing target data reference in SQL\n$self->{STH}->{Statement}\n";
+    }
+
     if (! $self->{STH}->execute(@bindlist)) {
 	croak $self->{DBH}->errstr. " in SQL\n$self->{STH}->{Statement}\n";
     }
 
     if ($self->{IS_SELECT}) {
-	$self->fetch($data);
-	return 0;
+	return $self->fetch($data);
+#	return 0;
     }
     else {
 	return $self->{STH}->rows;
@@ -150,12 +169,17 @@ sub _substitutions {
 
     my $sql = $self->{SQL};
     foreach my $directvar (@{$self->{DIRECTVARS}}) {
+	my $val;
 	if ($self->{ALLARRAYS}) {
-	    $sql =~ s/\$$directvar(\W|$)/$data->{$directvar}[0]/g;
+	    $val = $data->{$directvar}[0];
 	} else {
 	    croak "Expected scalar for $directvar" if ref($data->{$directvar});
-	    $sql =~ s/\$$directvar(\W|$)/$data->{$directvar}/g;
+	    $val = $data->{$directvar};
 	}
+	printf STDERR ("\tSUB \$%s = %s\n",
+		       $directvar,
+		       $val || '(null)') if $self->{TRACE};
+	$sql =~ s/\$$directvar(\W|$)/$val$1/g;
     }
 
     my $sth = $self->{DBH}->prepare($sql);
@@ -163,6 +187,8 @@ sub _substitutions {
 	croak $self->{DBH}->errstr . " in SQL\n$sql\n";
     }
     $self->{STH} = $sth;
+
+#    print STDERR "SUBSITUTION COMPLETE:\n", $sql, "\n";
 }
 
 
@@ -178,12 +204,18 @@ sub _bind {
     my @bindlist;
 
     foreach my $bindvar (@{$self->{BINDVARS}}) {
+	my $val;
 	if ($self->{ALLARRAYS}) {
-	    push @bindlist, $data->{$bindvar}[0];
+	    $val = $data->{$bindvar}[0];
 	} else {
 	    croak "Expected scalar for $bindvar" if ref($data->{$bindvar});
-	    push @bindlist, $data->{$bindvar};
+	    $val = $data->{$bindvar};
 	}
+
+	printf STDERR ("\tBIND :%s = %s\n",
+		       $bindvar,
+		       $val || '(null)') if $self->{TRACE};
+	push @bindlist, $val;
     }
 
     return @bindlist;

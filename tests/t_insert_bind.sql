@@ -13,15 +13,16 @@ insert into BUG (
        component,
        resolution
 ) values (
-  5,
-  42,
-  3,
+  7,
+  :groupset,
+# :nothing,
+  $assigned_to,
   "HIGH",
   "NEW",
   current_timestamp,
   "RH",
   "HIGH",
-  "DBIx\:\:Librarian",
+  :product,
   3,
   "0.1",
   "Statement",
@@ -32,4 +33,4 @@ insert into BUG (
 
 select1	bugid
 from	BUG
-where	groupset = 42
+where	groupset = :groupset

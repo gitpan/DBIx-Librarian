@@ -16,12 +16,15 @@ my $data = {};
 ######################################################################
 
 # Erect test tables
-system ("mysql -v -D test < t/bugdb.ddl") and die;
+system ("mysql -v -D test < tests/bugdb.ddl") and do {
+    print STDERR "mysql not operational on this system.  Aborting tests.\n";
+    exit;
+};
 
 my $dblbn = new DBIx::Librarian ({
-				  LIB => ["t"],
+				  LIB => ["tests"],
 #				  EXTENSION => "sql",
-#				  TRACE => 1
+				  TRACE => 1
 				 });
 
 # test series with default archiver
@@ -30,11 +33,12 @@ runtest();
 $dblbn->disconnect;
 
 my $archiver = new DBIx::Librarian::Library::ManyPerFile({
-							  LIB => ["t"],
+							  LIB => ["tests"],
 							  EXTENSION => "msql",
 							  });
 $dblbn = new DBIx::Librarian ({
 			       ARCHIVER => $archiver,
+			       TRACE => 1,
 			      });
 
 # test series with ManyPerFile archiver
@@ -48,6 +52,10 @@ system ("echo 'drop table BUG' | mysql -v -D test") and die;
 exit;
 
 sub runtest {
+
+my @toc = $dblbn->{SQL}->toc;
+#print join(",", @toc), "\n";
+ok (scalar(@toc) == 6, "toc");
 
 ######################################################################
 # DELETE to prepare for test scenario
@@ -69,10 +77,18 @@ ok ($@, "successful prepare");
 # INSERT with no bind variable
 # SELECT check to verify that one row was inserted
 
-eval { $dblbn->execute("t_insert", $data); };
+my @results;
+eval { @results = $dblbn->execute("t_insert", $data); };
 print STDERR $@ if $@;
 
 ok($data->{bugid} == 5, "insert, no bind variables");
+ok($results[0] == 2
+   && $results[1]->[0] == 1
+   && $results[1]->[1] == 1, "rowcounts");
+
+
+# force disconnect to make sure Librarian reconnects correctly
+$dblbn->{DBH}->disconnect;
 
 ######################################################################
 # INSERT with bind variables
@@ -118,7 +134,20 @@ foreach my $bug (@{$data->{bug}}) {
 ok($i == 2, "fetching rows from sub-level of data");
 
 ######################################################################
+# try an non-existent query
+
+eval { $dblbn->execute("t_does_not_exist", $data) };
+ok($@, "t_does_not_exist not found");
+
+ok (! $dblbn->can("t_does_not_exist"), "cannot");
+ok ($dblbn->can("t_select_bug"), "can");
+
 ######################################################################
+
+eval { $dblbn->execute("t_select_all"); };
+print STDERR $@ if $@;
+ok ($@, "missing data");
+
 ######################################################################
 ######################################################################
 

@@ -6,6 +6,7 @@ insert into BUG (
        bug_status,
        creation_ts,
        op_sys,
+# embedded comment
        priority,
        product,
        reporter,
@@ -13,15 +14,15 @@ insert into BUG (
        component,
        resolution
 ) values (
-  7,
-  :groupset,
-  :assigned_to,
+  5,
+  42,
+  3,
   "HIGH",
   "NEW",
   current_timestamp,
   "RH",
   "HIGH",
-  :product,
+  "DBIx::Librarian",
   3,
   "0.1",
   "Statement",
@@ -32,4 +33,4 @@ insert into BUG (
 
 select1	bugid
 from	BUG
-where	groupset = :groupset
+where	groupset = 42

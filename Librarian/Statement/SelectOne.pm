@@ -15,7 +15,9 @@ SELECT statement that expects to retrieve exactly one record from
 the database, but might find none.  An exception is raised if
 more than one row is found.
 
-All values fetched will be stored in top-level scalars in the data hash.
+By default, all values fetched will be stored in top-level scalars
+in the data hash.  If ALLARRAYS is set, results will be stored as
+element zero in a list for each field.
 
 =cut
 
@@ -23,6 +25,7 @@ sub fetch {
     my ($self, $data) = @_;
 
     my $hash_ref = $self->{STH}->fetchrow_hashref;
+    return 0 if !$hash_ref;
 
     while (my ($key, $val) = each %$hash_ref) {
 	if ($self->{ALLARRAYS}) {
@@ -35,6 +38,8 @@ sub fetch {
     if ($self->{STH}->fetchrow_hashref) {
 	croak "Expected exactly one row; received more than one for\n" . $self->{STH}->{Statement} . "\n";
     }
+
+    return 1;
 }
 
 
