@@ -1,8 +1,10 @@
 package DBIx::Librarian::Statement::SelectMany;
 
-require 5.004;
-@ISA = "DBIx::Librarian::Statement";
+require 5.005;
 use strict;
+use base qw(DBIx::Librarian::Statement);
+use vars qw($VERSION);
+$VERSION = '0.4';
 
 =head1 NAME
 
@@ -41,7 +43,9 @@ sub fetch {
 	    }
 	}
 	$i++;
+	last if $i >= $self->{MAXSELECTROWS};
     }
+
     return $i;
 }
 

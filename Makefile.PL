@@ -4,5 +4,8 @@ use ExtUtils::MakeMaker;
 WriteMakefile(
     'NAME'		=> 'DBIx::Librarian',
     'VERSION_FROM'	=> 'Librarian.pm', # finds $VERSION
-    'PREREQ_PM'		=> { DBI => 1.13 }, # e.g., Module::Name => 1.1
+    'PREREQ_PM'		=> {
+			    DBI => 1.13,
+			    Data::Library => 0.1,
+			   },
 );

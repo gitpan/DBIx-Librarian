@@ -22,7 +22,7 @@ insert into BUG (
   current_timestamp,
   "RH",
   "HIGH",
-  :product,
+  :testnode.product_name,
   3,
   "0.1",
   "Statement",

@@ -6,9 +6,7 @@ Librarian/Statement.pm
 Librarian/Statement/SelectExactlyOne.pm
 Librarian/Statement/SelectMany.pm
 Librarian/Statement/SelectOne.pm
-Librarian/Library/OnePerFile.pm
-Librarian/Library/ManyPerFile.pm
-test.pl
+t/00suite.t
 tests/allqueries.msql
 tests/bugdb.ddl
 tests/t_delete.sql
@@ -17,3 +15,4 @@ tests/t_insert.sql
 tests/t_select_all.sql
 tests/t_select_bug.sql
 tests/t_select_row.sql
+tests/t_select_row2.sql

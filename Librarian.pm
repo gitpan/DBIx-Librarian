@@ -5,8 +5,9 @@ use strict;
 #use warnings;			# needs 5.6
 use vars qw($VERSION);
 
-$VERSION = '0.1';
+$VERSION = '0.4';
 
+use Data::Library::OnePerFile;	# default archiver
 use DBIx::Librarian::Statement;
 
 =head1 NAME
@@ -107,8 +108,6 @@ DBIx::Librarian will use the following:
   DBI_DSN       standard DBI connection parameters
   DBI_USER
   DBI_PASS
-
-  DBIX_LIBRARIAN_TRACE  turns on basic internal logging
 
 
 =head1 DESCRIPTION
@@ -281,6 +280,16 @@ so then you can access the information via
 use DBI;
 use Carp;
 
+use Log::Channel;
+
+{
+    my $initlog = new Log::Channel ("init");
+    sub initlog { $initlog->(@_) }
+
+    my $execlog = new Log::Channel ("exec");
+    sub execlog { $execlog->(@_) }
+}
+
 my %select_mode = (
 		   "*"	=> "zero_or_more",
 		   "?"	=> "zero_or_one",
@@ -292,15 +301,15 @@ my %select_mode = (
 my %parameters = (
 		  "ARCHIVER" => undef,
 		  "LIB"	=> undef,
-		  "EXTENSION" => undef,
+		  "EXTENSION" => "sql",
 		  "AUTOCOMMIT" => 1,
 		  "ALLARRAYS" => 0,
 		  "DBH" => undef,
 		  "DBI_DSN" => undef,
 		  "DBI_USER" => undef,
 		  "DBI_PASS" => undef,
-		  "TRACE" => undef,
-		  "LONGREADLEN" => 1000,
+		  "LONGREADLEN" => 10000,
+		  "MAXSELECTROWS" => 1000,
 		 );
 
 =item B<new>
@@ -310,15 +319,16 @@ my %parameters = (
 Supported Librarian parameters:
 
   ARCHIVER    Reference to class responsible for caching SQL statements.
-              Default is DBIx::Librarian::Library::OnePerFile.
+              Default is Data::Library::OnePerFile.
 
   LIB         If set, passed through to archiver
 
   EXTENSION   If set, passed through to archiver
 
   AUTOCOMMIT  If set, will commit() upon completion of all the SQL
-              statements in a tag.  If not set, the application must
-              call $dblbn->commit directly.  Default is set.
+              statements in a tag (not after each statement).
+              If not set, the application must call commit() directly.
+              Default is set.
 
   ALLARRAYS   If set, all bind and direct substition variables will
               be obtained from element 0 of the named array, rather
@@ -331,9 +341,11 @@ Supported Librarian parameters:
   DBI_USER    passed directly to DBI::connect
   DBI_PASS    passed directly to DBI::connect
 
-  TRACE       Turns on function tracing in this package.
-              Can be set via environment variable DBIX_LIBRARIAN_TRACE.
-              Passed through to archiver if set.
+  LONGREADLEN passed through to "LongReadLen" DBI parameter.
+              Defaults to 10000.
+
+  MAXSELECTROWS  Set to a numeric value.  Limits the number of rows returned
+              by a SELECT call.  Defaults to 1000.
 
 =cut
 
@@ -368,8 +380,6 @@ sub _init {
 	$self->{$key} = $parameters{$key} unless defined $self->{$key};
     }
 
-    $self->{TRACE} = $ENV{DBIX_LIBRARIAN_TRACE} unless $self->{TRACE};
-
     if (! defined $self->{DBH}) {
 	$self->_connect;
     }
@@ -385,13 +395,11 @@ sub _init_archiver {
     my $config = {};
     $config->{LIB} = $self->{LIB} if $self->{LIB};
     $config->{EXTENSION} = $self->{EXTENSION} if $self->{EXTENSION};
-    $config->{TRACE} = $self->{TRACE} if $self->{TRACE};
 
     if (!$archiver) {
 	# use default archiver
 
-	use DBIx::Librarian::Library::OnePerFile;
-	$archiver = new DBIx::Librarian::Library::OnePerFile($config);
+	$archiver = new Data::Library::OnePerFile($config);
     }
 
     $self->{SQL} = $archiver;
@@ -401,10 +409,9 @@ sub _init_archiver {
 sub _connect {
     my ($self) = shift;
 
-    printf STDERR ("CONNECT to %s as %s\n",
-		   $self->{DBI_DSN} || $ENV{DBI_DSN},
-		   $self->{DBI_USER} || $ENV{DBI_USER} || "(none)")
-      if $self->{TRACE};
+    initlog sprintf ("CONNECTING to %s as %s\n",
+		     $self->{DBI_DSN} || $ENV{DBI_DSN},
+		     $self->{DBI_USER} || $ENV{DBI_USER} || "(none)");
 
     my $dbh = DBI->connect (
 			    $self->{DBI_DSN},
@@ -413,9 +420,10 @@ sub _connect {
 			    {
 			     RaiseError => 0,
 			     PrintError => 0,
-			     AutoCommit => 0
+			     AutoCommit => 0,
 			    }
 			   );
+
     if (!$dbh) {
 	croak $DBI::errstr;
     }
@@ -426,6 +434,14 @@ sub _connect {
     $self->{DBH} = $dbh;
 }
 
+
+=item B<prepare>
+
+  $dblbn->prepare(@tag_list);
+
+Retrieves, prepares and caches a list of SQL queries.
+
+=cut
 
 sub prepare {
     my ($self, @tags) = @_;
@@ -482,14 +498,17 @@ if a SELECT is attempted without a $data target.
 sub execute {
     my ($self, $tag, $data) = @_;
 
-    $self->_connect if ! $self->is_connected;
+    if (! $self->is_connected) {
+	disconnect $self;	# clean up
+	_connect $self;
+    }
 
     my $prepped = $self->{SQL}->lookup($tag);
     if (!$prepped) {
 	$prepped = $self->_prepare($tag);
     }
 
-    print STDERR "EXECUTE $tag\n" if $self->{TRACE};
+    execlog "EXECUTE $tag\n";
 
     my @rowcounts = $self->_execute($prepped, $data);
     my $totalrows = 0;
@@ -503,8 +522,9 @@ sub _prepare {
     my ($self, $tag) = @_;
 
     my $sql = $self->{SQL}->find($tag);
+    croak "Unable to find $tag" unless $sql;
 
-    print STDERR "PREPARE $tag\n" if $self->{TRACE};
+    execlog "PREPARE $tag\n";
 
     my @stmts;
 
@@ -513,8 +533,8 @@ sub _prepare {
     if (($self->{DBH}->{Driver}->{Name} =~ /Oracle/i)
 	&& ($sql =~ /^\s*BEGIN/))
     {
-	print STDERR "\tOracle PL/SQL block\n" if $self->{TRACE};
-	# then treat the entire thing as a single statement.
+#	print STDERR "\tOracle PL/SQL block\n" if $self->{TRACE};
+	# treat the entire thing as a single statement.
 	push @stmts, $sql;
     } else {
 
@@ -537,22 +557,26 @@ sub _prepare {
 
     foreach my $stmt (@stmts) {
 	if ($stmt =~ /^include\s+/io) {
-	    my ($include) = $stmt =~ /^include\s+(\S+)/;
+	    my ($include) = $stmt =~ /^include\s+(\S+)/o;
 	    push @preps, $include;
 	    $self->_prepare($include);
 	} else {
-	    if ($self->{DBH}->{Driver}->{Name} =~ /Oracle/i) {
+	    if ($self->{DBH}->{Driver}->{Name} =~ /Oracle/io) {
 		$stmt =~ s/--.*//mog;	# strip out Oracle comments
 		if ($stmt !~ /^\s*BEGIN/) {
 		    $stmt =~ s/\s*;$//mso; # erase trailing semicolon
 		}
 	    } else {
 		$stmt =~ s/\s*;$//mso;	# erase trailing semicolon
+		$stmt =~ s/\s*$//mso;	# erase trailing whitespace
 	    }
 
-	    my $statement = new DBIx::Librarian::Statement ($self->{DBH},
+	    my $statement = new DBIx::Librarian::Statement (
+							    $self->{DBH},
 							    $stmt,
-							    TRACE => $self->{TRACE});
+							    MAXSELECTROWS => $self->{MAXSELECTROWS},
+							    NAME => $tag,
+							   );
 	    $statement->{ALLARRAYS} = $self->{ALLARRAYS};
 	    push @preps, $statement;
 	}
@@ -569,21 +593,27 @@ sub _execute {
 
     my @rowcounts;
 
+    my $changes = 0;
     foreach my $stmt_prep (@{$prep}) {
 	if (!ref($stmt_prep)) {
 	    # found an include
 	    push @rowcounts, $self->execute($stmt_prep, $data);
 	} else {
-	    eval { push @rowcounts, $stmt_prep->execute($data); };
+	    eval {
+		my $rows = $stmt_prep->execute($data);
+		push @rowcounts, $rows;
+	    };
 	    if ($@) {
-		$self->rollback;
+		if ($self->{AUTOCOMMIT} && $changes) {
+		    $self->rollback;
+		}
 		die $@;
 	    }
+	    $changes++ unless $stmt_prep->{IS_SELECT};
 	}
     }
 
-#    if ($update_count && $self->{AUTOCOMMIT}) {
-    if ($self->{AUTOCOMMIT}) {
+    if ($self->{AUTOCOMMIT} && $changes) {
 #	# there was at least one non-SELECT, so better commit here
 	$self->commit;
     }
@@ -602,6 +632,8 @@ $dblbn->delaycommit() has been called.
 sub commit {
     my ($self) = @_;
 
+    execlog "COMMIT\n";
+
     $self->{DBH}->commit;
 }
 
@@ -614,6 +646,8 @@ $dblbn->delaycommit() has been called.
 
 sub rollback {
     my ($self) = @_;
+
+    execlog "ROLLBACK\n";
 
     $self->{DBH}->rollback;
 }
@@ -656,13 +690,12 @@ are discarded.
 sub disconnect {
     my ($self) = @_;
 
-    printf STDERR ("DISCONNECT %s\n",
-		   $self->{DBI_DSN} || $ENV{DBI_DSN})
-      if $self->{TRACE};
+    initlog sprintf ("DISCONNECT %s\n",
+		     $self->{DBI_DSN} || $ENV{DBI_DSN});
 
     $self->{DBH}->disconnect if $self->{DBH};
     undef $self->{DBH};
-#    undef $self->{SQL};
+    $self->{SQL}->reset;
 }
 
 =item B<is_connected>
@@ -677,7 +710,7 @@ depends on the $dbh->{Active} flag set by DBI, which is driver-specific.
 sub is_connected {
     my ($self) = @_;
 
-    return 1 if $self->{DBH} && $self->{DBH}->{Active};
+    return 1 if $self->{DBH} && $self->{DBH}->ping;
 }
 
 sub DESTROY {
@@ -688,13 +721,21 @@ sub DESTROY {
 
 1;
 
+=head1 LOGGING
+
+Declares two log channels using Log::Channel, "init" and "exec".
+Connect and disconnect events are logged to the init channel,
+query execution (prepare, execute, commit, rollback) to exec.
+
+See also the channels for DBIx::Librarian::Statement logging.
+
 =head1 AUTHOR
 
 Jason W. May <jmay@pobox.com>
 
 =head1 COPYRIGHT
 
-Copyright (C) 2001 Jason W. May.  All rights reserved.
+Copyright (C) 2001-2003 Jason W. May.  All rights reserved.
 This module is free software; you can redistribute it and/or
 modify it under the same terms as Perl itself.
 
@@ -715,3 +756,5 @@ Under development.
   Relevant links stolen from SQL::Catalog documentation:
     http://perlmonks.org/index.pl?node_id=96268&lastnode_id=96273
     http://perlmonks.org/index.pl?node=Leashing%20DBI&lastnode_id=96268
+
+=cut

@@ -1,9 +1,11 @@
 package DBIx::Librarian::Statement::SelectExactlyOne;
 
-require 5.004;
-@ISA = "DBIx::Librarian::Statement";
+require 5.005;
+use base qw(DBIx::Librarian::Statement);
 use strict;
 use Carp;
+use vars qw($VERSION);
+$VERSION = '0.4';
 
 =head1 NAME
 
@@ -29,10 +31,19 @@ sub fetch {
     }
 
     while (my ($key, $val) = each %$hash_ref) {
+	my $node = $data;
+
+	if ($key =~ /\./) {
+	    my ($base, $subkey) = split /\./, $key;
+	    $node->{$base} = {} unless defined $node->{$base};
+	    $node = $node->{$base};
+	    $key = $subkey;
+	}
+
 	if ($self->{ALLARRAYS}) {
-	    $data->{$key}[0] = $val;
+	    $node->{$key}[0] = $val;
 	} else {
-	    $data->{$key} = $val;
+	    $node->{$key} = $val;
 	}
     }
 
@@ -52,6 +63,6 @@ Jason W. May <jmay@pobox.com>
 
 =head1 COPYRIGHT
 
-Copyright (C) 2001 Jason W. May.  All rights reserved.
+Copyright (C) 2001-2003 Jason W. May.  All rights reserved.
 This module is free software; you can redistribute it and/or
 modify it under the same terms as Perl itself.

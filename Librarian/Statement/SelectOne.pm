@@ -1,9 +1,11 @@
 package DBIx::Librarian::Statement::SelectOne;
 
-require 5.004;
-@ISA = "DBIx::Librarian::Statement";
+require 5.005;
+use base qw(DBIx::Librarian::Statement);
 use strict;
 use Carp;
+use vars qw($VERSION);
+$VERSION = '0.4';
 
 =head1 NAME
 
@@ -25,13 +27,25 @@ sub fetch {
     my ($self, $data) = @_;
 
     my $hash_ref = $self->{STH}->fetchrow_hashref;
-    return 0 if !$hash_ref;
+    if (!$hash_ref) {
+#	print STDERR "...no matching rows\n";
+	return 0;
+    }
 
     while (my ($key, $val) = each %$hash_ref) {
+	my $node = $data;
+
+	if ($key =~ /\./) {
+	    my ($base, $subkey) = split /\./, $key;
+	    $node->{$base} = {} unless defined $node->{$base};
+	    $node = $node->{$base};
+	    $key = $subkey;
+	}
+
 	if ($self->{ALLARRAYS}) {
-	    $data->{$key}[0] = $val;
+	    $node->{$key}[0] = $val;
 	} else {
-	    $data->{$key} = $val;
+	    $node->{$key} = $val;
 	}
     }
 
