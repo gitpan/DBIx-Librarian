@@ -5,4 +5,14 @@ Librarian/Statement.pm
 Librarian/Statement/SelectExactlyOne.pm
 Librarian/Statement/SelectMany.pm
 Librarian/Statement/SelectOne.pm
-
+Librarian/Library/OnePerFile.pm
+Librarian/Library/ManyPerFile.pm
+test.pl
+t/allqueries.msql
+t/bugdb.ddl
+t/t_delete.sql
+t/t_insert_bind.sql
+t/t_insert.sql
+t/t_select_all.sql
+t/t_select_bug.sql
+t/t_select_row.sql

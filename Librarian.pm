@@ -2,7 +2,7 @@ package DBIx::Librarian;
 
 require 5.005;
 use strict;
-use warnings;
+#use warnings;			# needs 5.6
 use vars qw($VERSION);
 
 $VERSION = '0.1';
@@ -11,11 +11,11 @@ use DBIx::Librarian::Statement;
 
 =head1 NAME
 
-DBIx::Librarian - Manage SQL in template files
+DBIx::Librarian - Manage SQL in repository outside code
 
 =head1 SYNOPSIS
 
-  use DBIx::SQLLibrary;
+  use DBIx::Librarian;
 
   my $dblbn = new DBIx::Librarian;
 
@@ -79,8 +79,8 @@ of entire SQL fragments.
 
 =item *
 
-SQL files can be edited while the application is running, and the
-modified SQL will be used when that query is next executed.
+Supports multiple repositories for queries - currently supports
+individual files, multiple-query files, and SQL::Catalog.
 
 =item *
 
@@ -216,6 +216,10 @@ Make sure this works properly with threads.
 Improve regex matching for substitution variables in SQL statements so
 they handle quoting and comments.
 
+=item *
+
+Support for Oracle PL/SQL and similar database language extensions.
+
 =back
 
 =head1 WARNINGS
@@ -273,16 +277,16 @@ my %select_mode = (
 		  );
 
 my %parameters = (
-		  "LIB"	=> [ "sql" ],
-		  "EXTENSION" => "sql",
-#		  "STRICT_SELECT" => 0,
+		  "ARCHIVER" => undef,
+		  "LIB"	=> undef,
+		  "EXTENSION" => undef,
 		  "AUTOCOMMIT" => 1,
 		  "ALLARRAYS" => 0,
 		  "DBH" => undef,
-		  "TRACE" => undef,
 		  "DBI_DSN" => undef,
 		  "DBI_USER" => undef,
 		  "DBI_PASS" => undef,
+		  "TRACE" => undef,
 		 );
 
 =item B<new>
@@ -291,21 +295,31 @@ my %parameters = (
 
 Supported Librarian parameters:
 
-  LIB         Search path for SQL files.  Defaults to [ "sql" ]
+  ARCHIVER    Reference to class responsible for caching SQL statements.
+              Default is DBIx::Librarian::Library::OnePerFile.
 
-  EXTENSION   Filename extension for SQL files.  Defaults to ".sql"
+  LIB         If set, passed through to archiver
+
+  EXTENSION   If set, passed through to archiver
 
   AUTOCOMMIT  If set, will commit() upon completion of all the SQL
-              statements in a file.  If not set, the application must
+              statements in a tag.  If not set, the application must
               call $dblbn->commit directly.  Default is set.
 
   ALLARRAYS   If set, all bind and direct substition variables will
               be obtained from element 0 of the named array, rather
               than from scalars.  Default is off.
 
+  DBH         If set, Librarian will use this database handle and
+              will not open one itself.
+
   DBI_DSN     passed directly to DBI::connect
   DBI_USER    passed directly to DBI::connect
   DBI_PASS    passed directly to DBI::connect
+
+  TRACE       Turns on function tracing in this package.
+              Can be set via environment variable DBIX_LIBRARIAN_TRACE.
+              Passed through to archiver if set.
 
 =cut
 
@@ -345,6 +359,28 @@ sub _init {
     if (! defined $self->{DBH}) {
 	$self->_connect;
     }
+
+    $self->_init_archiver;
+}
+
+
+sub _init_archiver {
+    my ($self) = shift;
+
+    my $archiver = $self->{ARCHIVER};
+    my $config = {};
+    $config->{LIB} = $self->{LIB} if $self->{LIB};
+    $config->{EXTENSION} = $self->{EXTENSION} if $self->{EXTENSION};
+    $config->{TRACE} = $self->{TRACE} if $self->{TRACE};
+
+    if (!$archiver) {
+	# use default archiver
+
+	use DBIx::Librarian::Library::OnePerFile;
+	$archiver = new DBIx::Librarian::Library::OnePerFile($config);
+    }
+
+    $self->{SQL} = $archiver;
 }
 
 
@@ -369,6 +405,17 @@ sub _connect {
 }
 
 
+sub prepare {
+    my ($self, @tags) = @_;
+
+    foreach my $tag (@tags) {
+	if (! $self->{SQL}->lookup($tag)) {
+	    $self->_prepare($tag);
+	}
+    }
+}
+
+
 =item B<execute>
 
   $dblbn->execute("label", $data);
@@ -376,9 +423,7 @@ sub _connect {
 $data is assumed to be a hash reference.  Inputs for bind variables will
 be obtained from $data.  SELECT results will be written back to $data.
 
-The SQL block will be located by searching through the directory path
-in the LIB parameter for a file named "label.EXTENSION".  The first
-matching file will be used.  Conflicts are not detected.
+The SQL block is obtained from the repository specified above.
 
 Return value is the number of non-SELECT SQL statements that were
 executed, if you find that useful.
@@ -388,13 +433,8 @@ executed, if you find that useful.
 sub execute {
     my ($self, $tag, $data) = @_;
 
-    my $prepped;
-
-    if ($self->_cacheok($tag)) {
-	# use the cached info for this tag
-	$prepped = $self->{SQL}->{$tag}->{STMTS};
-    } else {
-	# load (or reload) the file
+    my $prepped = $self->{SQL}->lookup($tag);
+    if (!$prepped) {
 	$prepped = $self->_prepare($tag);
     }
 
@@ -404,39 +444,12 @@ sub execute {
 }
 
 
-sub _cacheok {
-    my ($self, $tag) = @_;
-
-    return unless defined $self->{SQL}->{$tag};
-
-    return unless ($self->{SQL}->{$tag}->{LOADTS}
-		   >= (stat($self->{SQL}->{$tag}->{FILE}))[9]);
-
-    return 1;
-}
-
-
 sub _prepare {
     my ($self, $tag) = @_;
 
-    print STDERR "FIND $tag\n" if $self->{TRACE};
+    my $sql = $self->{SQL}->find($tag);
 
-    my $file;
-    foreach my $lib (@{$self->{LIB}}) {
-	$file = "$lib/$tag.$self->{EXTENSION}";
-	next unless -r $file;
-    }
-    if (! -r $file) {
-	# never found a matching readable file
-	croak "Unable to read .$self->{EXTENSION} file for tag $tag";
-    }
-
-    print STDERR "PREPARE $file\n" if $self->{TRACE};
-
-    open(INPUT, $file) or croak "Open $file failed: $!";
-    local $/ = undef;
-    my $sql = <INPUT>;
-    close INPUT;
+    print STDERR "PREPARE $tag\n" if $self->{TRACE};
 
     my @stmts = grep { !/^\s*$/ } split (/\s*(\n\s*){2,}/, $sql);
 
@@ -456,9 +469,7 @@ sub _prepare {
 	}
     }
 
-    $self->{SQL}->{$tag}->{STMTS} = \@preps;
-    $self->{SQL}->{$tag}->{FILE} = $file;
-    $self->{SQL}->{$tag}->{LOADTS} = time;
+    $self->{SQL}->cache($tag, \@preps);
 
     return \@preps;
 }
