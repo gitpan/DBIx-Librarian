@@ -1,0 +1,8 @@
+Makefile.PL
+MANIFEST
+Librarian.pm
+Librarian/Statement.pm
+Librarian/Statement/SelectExactlyOne.pm
+Librarian/Statement/SelectMany.pm
+Librarian/Statement/SelectOne.pm
+
