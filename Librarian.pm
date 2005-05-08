@@ -5,7 +5,7 @@ use strict;
 #use warnings;			# needs 5.6
 use vars qw($VERSION);
 
-$VERSION = '0.4';
+$VERSION = '0.5';
 
 use Data::Library::OnePerFile;	# default archiver
 use DBIx::Librarian::Statement;
@@ -499,8 +499,8 @@ sub execute {
     my ($self, $tag, $data) = @_;
 
     if (! $self->is_connected) {
-	disconnect $self;	# clean up
-	_connect $self;
+	$self->disconnect;	# clean up
+	$self->_connect;
     }
 
     my $prepped = $self->{SQL}->lookup($tag);

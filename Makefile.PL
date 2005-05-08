@@ -6,6 +6,6 @@ WriteMakefile(
     'VERSION_FROM'	=> 'Librarian.pm', # finds $VERSION
     'PREREQ_PM'		=> {
 			    DBI => 1.13,
-			    Data::Library => 0.1,
+			    Data::Library => 0.2,
 			   },
 );
