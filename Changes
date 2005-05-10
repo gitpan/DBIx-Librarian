@@ -1,5 +1,8 @@
 Revision history for Perl extension DBIx::Librarian
 
+0.5   09 May 2005
+	- needed class method in DESTROY
+
 0.5   07 May 2005
 	- should be calling class methods when reconnecting
 

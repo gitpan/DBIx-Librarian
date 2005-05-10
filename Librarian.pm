@@ -5,7 +5,7 @@ use strict;
 #use warnings;			# needs 5.6
 use vars qw($VERSION);
 
-$VERSION = '0.5';
+$VERSION = '0.6';
 
 use Data::Library::OnePerFile;	# default archiver
 use DBIx::Librarian::Statement;
@@ -716,7 +716,7 @@ sub is_connected {
 sub DESTROY {
     my ($self) = @_;
 
-    disconnect $self if $self->is_connected;
+    $self->disconnect if $self->is_connected;
 }
 
 1;
